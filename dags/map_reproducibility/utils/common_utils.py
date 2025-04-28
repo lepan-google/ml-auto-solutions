@@ -75,16 +75,52 @@ def git_cookie_authdaemon():
       "sleep 4",
       "fi",
       "ps aux | grep git-cookie-authdaemon | grep -v -E 'airflow|grep|bash'",
+      "git config --list --global ",
   )
   return auth_cmds
 
 
-def clone_recipes_gob():
+def configure_git(
+    recipes_repo_change_refs: str = None,
+    bq_writer_repo_change_refs: str = None,
+    gcs_automation_repo_change_refs: str = None,
+    username: str = None,
+    email: str = None,
+):
+  if not any((
+      recipes_repo_change_refs,
+      bq_writer_repo_change_refs,
+      gcs_automation_repo_change_refs,
+  )):
+    return ""
+
+  cmds = (
+      f"git config --global user.name {username}",
+      f"git config --global user.email {email}",
+  )
+  return cmds
+
+
+def clone_recipes_gob(
+    change_refs: str = None,
+    recipe_branch: str = False,
+):
   gob_clone_cmds = (
       "echo 'trying to clone GoB repo from outside'",
       "git clone https://ai-hypercomputer-benchmarks.googlesource.com/"
       "reproducible-benchmark-recipes",
   )
+  if recipe_branch:
+    gob_clone_cmds += (
+        f"(cd reproducible-benchmark-recipes && git checkout {recipe_branch})",
+    )
+  if change_refs:
+    gob_clone_cmds += (
+        "(cd reproducible-benchmark-recipes && git fetch "
+        "https://ai-hypercomputer-benchmarks.googlesource.com/"
+        f"reproducible-benchmark-recipes {change_refs} && "
+        "git merge FETCH_HEAD)",
+    )
   return gob_clone_cmds
 
 
@@ -97,11 +133,48 @@ def clone_internal_recipes_gob():
   return gob_clone_cmds
 
 
-def get_bq_writer_repo():
+def get_bq_writer_repo(
+    change_refs: str = None,
+    gcs_results_generator: bool = False,
+):
   gob_clone_cmds = (
       "echo 'trying to clone GoB bq writer repo'",
       "git clone https://cmcs-perf-tooling-internal.googlesource.com/"
       "benchmark-automation",
+  )
+  if change_refs:
+    gob_clone_cmds += (
+        "(cd benchmark-automation && git fetch "
+        "https://cmcs-perf-tooling-internal.googlesource.com/"
+        f"benchmark-automation {change_refs} && "
+        "git merge FETCH_HEAD)",
+    )
+  if gcs_results_generator:
+    gob_clone_cmds += (
+        "(cd benchmark-automation && ./install_mantaray.sh)",
+    )
+  return gob_clone_cmds
+
+
+def get_gcs_automation_repo(
+    change_refs: str = None,
+    gcs_results_generator: bool = False,
+):
+  if not gcs_results_generator:
+    return ""
+  gob_clone_cmds = (
+      "echo 'trying to clone GCS automation repo'",
+      "git clone https://tessellations.googlesource.com/benchmarks",
+  )
+  if change_refs:
+    gob_clone_cmds += (
+        "(cd benchmarks && git fetch "
+        "https://tessellations.googlesource.com/benchmarks "
+        f"{change_refs} && git merge FETCH_HEAD)",
+    )
+  gob_clone_cmds += (
+      "(cd benchmarks/automation/run_results_generator && "
+      "pip install --require-hashes -r requirements.txt)",
   )
   return gob_clone_cmds
 
@@ -116,11 +189,19 @@ def configure_project_and_cluster(cluster: str, cluster_region: str):
   return set_project_command
 
 
-def get_gpu_recipe_cmd(hypercomputer, model_id, framework, recipe_repo_root):
+def get_gpu_recipe_cmd(
+    hypercomputer,
+    model_id,
+    framework,
+    recipe_repo_root,
+    storage_product: str = None,
+):
   gpu_recipe_cmd = (
       "cd reproducible-benchmark-recipes/projects/gpu-recipes",
       "export RECIPE_ROOT="
-      f"{recipe_repo_root}/training/{hypercomputer}/{model_id}/{framework}-pretraining-gke",
+      f"{recipe_repo_root}/training/{hypercomputer}/{model_id}/"
+      f"{framework}-pretraining-gke",
+      f"{f'-{storage_product}' if storage_product else ''}",
       "cd $RECIPE_ROOT",
   )
   return gpu_recipe_cmd
@@ -233,14 +314,15 @@ def helm_apply_cmds(
     kueue_name: str = None,
     additional_cmds: str = "",
     num_steps: int = None,
+    logs_bucket: str = None,
 ):
   gcs_cmd = ""
   if hypercomputer in ("a3ultra", "a4"):
     if framework != "maxtext" and kueue_name:
       gcs_cmd = f" --set queue={kueue_name}"
-    gcs_cmd += f" --set volumes.gcsMounts[0].bucketName={BUCKET_NAME}"
+    gcs_cmd += f" --set volumes.gcsMounts[0].bucketName={logs_bucket}"
   else:
-    gcs_cmd = f" --set workload.gcsBucketForDataCataPath={BUCKET_NAME}"
+    gcs_cmd = f" --set workload.gcsBucketForDataCataPath={logs_bucket}"
 
   if num_steps:
     additional_cmds += f" --set workload.steps={num_steps} "
@@ -602,6 +684,12 @@ def get_recipe_repo_path(tmpdir):
   return recipe_repo_root
 
 
+def get_gcs_automation_repo_path(tmpdir):
+  return os.path.join(
+      tmpdir, "benchmarks/automation/run_results_generator"
+  )
+
+
 def get_cluster(hardware: str = "a3ultra"):
   if hardware == "a3mega":
     return "a3plus-benchmark", "australia-southeast1"
@@ -843,6 +931,16 @@ def run_nemo_workload(
     two_node: bool = False,
     kueue_name: str = None,
     config_model_name: str = None,
+    git_name: str = None,
+    git_email: str = None,
+    storage_product: str = None,
+    gcs_results_generator: bool = False,
+    recipe_branch: str = None,
+    recipes_repo_change_refs: str = None,
+    bq_writer_repo_change_refs: str = None,
+    gcs_automation_repo_change_refs: str = None,
+    logs_bucket: str = None,
+    workload_image: str = None,
 ):
   with tempfile.TemporaryDirectory() as tmpdir:
     hook = SubprocessHook()
@@ -853,8 +951,25 @@ def run_nemo_workload(
             "-c",
             ";".join(
                 git_cookie_authdaemon()
-                + clone_recipes_gob()
-                + get_bq_writer_repo()
+                + configure_git(
+                    git_name,
+                    git_email,
+                    recipes_repo_change_refs,
+                    bq_writer_repo_change_refs,
+                    gcs_automation_repo_change_refs,
+                )
+                + clone_recipes_gob(
+                    recipes_repo_change_refs,
+                    recipe_branch,
+                )
+                + get_bq_writer_repo(
+                    bq_writer_repo_change_refs,
+                    gcs_results_generator=gcs_results_generator,
+                )
+                + get_gcs_automation_repo(
+                    gcs_automation_repo_change_refs,
+                    gcs_results_generator=gcs_results_generator,
+                )
             ),
         ],
         cwd=tmpdir,
@@ -862,7 +977,15 @@ def run_nemo_workload(
 
     recipe_repo_root = get_recipe_repo_path(tmpdir)
     bq_writer_repo_root = get_bq_writer_path(tmpdir)
-    value_yaml_path = f"training/{hypercomputer}/{model_id}/{framework}-pretraining-gke/values.yaml"
+    gcs_automation_repo_root = get_gcs_automation_repo_path(tmpdir)
+    value_yaml_path = (
+        f"training/{hypercomputer}/{model_id}/{framework}-pretraining-gke"
+        f"{f'-{storage_product}' if storage_product else ''}/values.yaml"
+    )
+
+    workload_image = workload_image if workload_image else get_image_version(
+        framework)
+    logs_bucket = logs_bucket if logs_bucket else BUCKET_NAME
 
     num_gpus_file = extract_gpus(recipe_repo_root, value_yaml_path)
 
@@ -902,7 +1025,11 @@ def run_nemo_workload(
             ";".join(
                 configure_project_and_cluster(cluster, cluster_region)
                 + get_gpu_recipe_cmd(
-                    hypercomputer, model_id, framework, recipe_repo_root
+                    hypercomputer,
+                    model_id,
+                    framework,
+                    recipe_repo_root,
+                    storage_product,
                 )
                 + install_helm_cmds()
                 + namespace_cmds()
@@ -912,9 +1039,10 @@ def run_nemo_workload(
                     hypercomputer,
                     full_config_yaml_path,
                     recipe_repo_root,
-                    get_docker_image(hypercomputer, framework),
+                    workload_image,
                     cluster_name=cluster,
                     kueue_name=kueue_name,
+                    logs_bucket=logs_bucket,
                     additional_cmds=additional_cmds,
                 )
                 + wait_for_jobs_cmds()
