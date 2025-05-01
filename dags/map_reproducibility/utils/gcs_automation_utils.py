@@ -95,3 +95,23 @@ def _run_results_generator_cmds(
   )
   print(f"metrics cmds: {cmds}")
   return cmds
+
+
+def pv_pvc_generate_cmds(
+    gcs_results_generator: bool,
+    recipe_branch: str,
+    dataset_bucket: str,
+    checkpoint_bucket: str,
+    recipe_repo_root: str,
+):
+  if not (gcs_results_generator and recipe_branch):
+    return ""
+  cmds = (
+      f"helm install -f {recipe_repo_root}/src/helm-charts/storage/gcs-fuse/values.yaml"
+      f"--set gcsVolumes[0].bucketName={dataset_bucket}"
+      f"--set gcsVolumes[1].bucketName={checkpoint_bucket}"
+      "$USER-gcs-pv-pvc"
+      f"{recipe_repo_root}/src/helm-charts/storage/gcs-fuse",
+  )
+  print(f"pvc command: {cmds}")
+  return cmds

@@ -24,7 +24,7 @@ import time
 import subprocess
 import getpass
 import logging
-import gcs_automation_utils
+import dags.map_reproducibility.utils.gcs_automation_utils as gcs_automation_utils
 
 from airflow.decorators import task
 from airflow.hooks.subprocess import SubprocessHook
@@ -201,7 +201,7 @@ def get_gpu_recipe_cmd(
       "cd reproducible-benchmark-recipes/projects/gpu-recipes",
       "export RECIPE_ROOT="
       f"{recipe_repo_root}/training/{hypercomputer}/{model_id}/"
-      f"{framework}-pretraining-gke",
+      f"{framework}-pretraining-gke"
       f"{f'-{storage_product}' if storage_product else ''}",
       "cd $RECIPE_ROOT",
   )
@@ -211,7 +211,8 @@ def get_gpu_recipe_cmd(
 def get_pre_workload_cmds(model_id, framework):
   prepare_workload_cmds = (
       "NOW=$(date +%s)",
-      f"export JOB_NAME=imo-team-regr-test-{model_id}-$NOW-{framework}",
+      f"export JOB_NAME=lepan-imo-team-regr-test-{model_id}-$NOW-{framework}",
+      # f"export JOB_NAME=lepan-gcsckptre-256-training-1745963671-gohn",
   )
   return prepare_workload_cmds
 
@@ -349,7 +350,7 @@ def helm_apply_cmds(
       f"={docker_image} "
       f"{cluster_cmd} {run_name_cmd} {gcs_cmd} {set_aotc}"
       f"{additional_cmds}"
-      f" $JOB_NAME {recipe_repo_root}/src/helm-charts/{hypercomputer}/{framework}-training",
+      f" $JOB_NAME {recipe_repo_root}/src/helm-charts/{hypercomputer}/{framework}-training-v2",
   )
   return helm_cmds
 
@@ -1021,6 +1022,8 @@ def run_nemo_workload(
     logs_bucket: str = None,
     gcs_source_bucket: str = None,
     gcs_metrics_bucket: str = None,
+    checkpoint_bucket: str = None,
+    dataset_bucket: str = None,
     workload_image: str = None,
     workload_type: str = None,
     benchmark_type: str = None,
@@ -1163,6 +1166,13 @@ def run_nemo_workload(
                 + install_helm_cmds()
                 + namespace_cmds()
                 + get_pre_workload_cmds(model_id, framework)
+                + gcs_automation_utils.pv_pvc_generate_cmds(
+                    gcs_results_generator=gcs_results_generator,
+                    recipe_branch=recipe_branch,
+                    dataset_bucket=dataset_bucket,
+                    checkpoint_bucket=checkpoint_bucket,
+                    recipe_repo_root=recipe_repo_root,
+                )
                 + helm_apply_cmds(
                     framework,
                     hypercomputer,
@@ -1196,7 +1206,7 @@ def run_nemo_workload(
                     recipe_repo_root=recipe_repo_root,
                     gcs_automation_repo_root=gcs_automation_repo_root,
                 )
-                + cleanup_cmds()
+                # + cleanup_cmds()
             ),
         ],
         cwd=tmpdir,
