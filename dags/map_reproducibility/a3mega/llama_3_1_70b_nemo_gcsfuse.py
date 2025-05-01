@@ -17,6 +17,8 @@
 import datetime
 
 from airflow import models
+from dags import composer_env
+from dags.map_reproducibility.utils.common_utils import get_scheduled_time
 from dags.map_reproducibility.utils.common_utils import run_nemo_workload
 
 
@@ -25,6 +27,19 @@ METRICS_MODEL_ID = "llama3.1-70b"
 PRECISION = "bf16"
 HYPERCOMPUTER = "a3mega"
 FRAMEWORK = "nemo"
+
+SCHEDULED_TIME = (
+    get_scheduled_time(HYPERCOMPUTER, MODEL_ID, FRAMEWORK)
+    if composer_env.is_prod_env()
+    else None
+)
+
+VALUE_YAML_PATH = (
+    f"training/{HYPERCOMPUTER}/{MODEL_ID}/nemo-pretraining-gke/values.yaml"
+)
+SOFTWARE_ID = "pytorch_nemo"
+IMAGE_VERSION = "nemo_workload:25.02"
+KUEUE_NAME = "multislice-kueue"
 NUM_GPUS = 256
 
 default_dag_args = {
@@ -33,12 +48,15 @@ default_dag_args = {
 
 
 with models.DAG(
-    dag_id=f"{HYPERCOMPUTER}_recipes_{MODEL_ID}_{FRAMEWORK}_gcsfuse",
+    dag_id=f"{HYPERCOMPUTER}_recipes_{MODEL_ID}_{FRAMEWORK}_gcs_2",
+    # schedule=SCHEDULED_TIME,
     tags=[
-        "experimental",
-        "regressiontests",
-        "a3mega",
-        "gcs-run"
+        # "reproducibility",
+        # "experimental",
+        # "xlml",
+        # "regressiontests",
+        # "a3mega",
+        "storage-run"
     ],
     start_date=datetime.datetime(2024, 11, 15),
     catchup=False,
@@ -49,23 +67,22 @@ with models.DAG(
       model_id=MODEL_ID,
       framework=FRAMEWORK,
       precision=PRECISION,
+      kueue_name=KUEUE_NAME,
       metrics_model_id=METRICS_MODEL_ID,
       num_gpus=NUM_GPUS,
       config_model_name="llama3.1-70b-256gpus-bf16-gcsfuse-checkpointing.yaml",
-      git_name="Le Pan",
-      git_email="lepan@google.com",
+      storage_run=True,
       storage_product="gcs",
-      gcs_results_generator=True,
-      # recipe_branch="storage-next",
-      # recipes_repo_change_refs="refs/changes/00/3800/4",
-      # gcs_automation_repo_change_refs="refs/changes/23/2023/13",
-      logs_bucket="cmcs-benchmark-logs",
-      dataset_bucket="cmcs-storage-training-benchmark",
-      checkpoint_bucket="cmcs-checkpoint-sydney",
+      storage_next_branch=True,
+      recipes_gob_patch_change="refs/changes/00/3800/3",
+      bq_writer_repo_patch_change="",
+      gcs_automation_repo_patch_change="refs/changes/23/2023/13",
       gcs_source_bucket="cmcs-checkpoint-sydney",
       gcs_metrics_bucket="cmcs-benchmark-raw-metrics",
       benchmark_type="checkpointing",
       gcsfuse_csi_driver="",
+      logs_bucket="cmcs-benchmark-logs",
+      num_steps=10,
       workload_type="system",
       workload_image="us-docker.pkg.dev/supercomputer-testing/dlsl-metadata/recipe-release-patched",
   )
